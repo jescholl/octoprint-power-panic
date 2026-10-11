@@ -1,0 +1,86 @@
+<h3>{{ _('Power Panic') }}</h3>
+<form class="form-horizontal" onsubmit="return false;">
+    <h4>{{ _('Automatic resume') }}</h4>
+    <div class="control-group">
+        <div class="controls">
+            <label class="checkbox">
+                <input type="checkbox" data-bind="checked: settings.plugins.power_panic.auto_resume">
+                {{ _('Resume automatically when every safety check passes') }}
+            </label>
+            <span class="help-block">{{ _('Prusa firmware 3.14+ only, and only when the printer reports the bed stayed warm, the outage was short, no tool change was interrupted, and the file is unchanged. Everything else waits for a person.') }}</span>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">{{ _('Longest outage to resume automatically') }}</label>
+        <div class="controls">
+            <div class="input-append">
+                <input type="number" min="0" class="input-mini" data-bind="value: settings.plugins.power_panic.auto_max_outage_minutes">
+                <span class="add-on">min</span>
+            </div>
+        </div>
+    </div>
+
+    <h4>{{ _('Waiting for a person') }}</h4>
+    <div class="control-group">
+        <label class="control-label">{{ _('Keep the printer ready for') }}</label>
+        <div class="controls">
+            <div class="input-append">
+                <input type="number" min="0" class="input-mini" data-bind="value: settings.plugins.power_panic.hold_heat_minutes">
+                <span class="add-on">min</span>
+            </div>
+            <span class="help-block">{{ _('While a Prusa recovery waits, the plugin keeps the printer\'s own Resume menu available and keeps PSU Control from switching it off. After this long it stops, so an abandoned recovery does not hold the bed hot indefinitely.') }}</span>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">{{ _('Forget interrupted prints after') }}</label>
+        <div class="controls">
+            <div class="input-append">
+                <input type="number" min="0" class="input-mini" data-bind="value: settings.plugins.power_panic.max_age_hours">
+                <span class="add-on">h</span>
+            </div>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">{{ _('Retry connecting for') }}</label>
+        <div class="controls">
+            <div class="input-append">
+                <input type="number" min="0" class="input-mini" data-bind="value: settings.plugins.power_panic.reconnect_minutes">
+                <span class="add-on">min</span>
+            </div>
+            <span class="help-block">{{ _('OctoPrint only tries to connect once at startup. While an interrupted print is pending, keep retrying for this long. 0 turns retrying off.') }}</span>
+        </div>
+    </div>
+
+    <h4>{{ _('Generic recovery (non-Prusa or no firmware recovery)') }}</h4>
+    <p class="help-block">{{ _('Untested on real non-Prusa printers. Assumes Z did not move while the printer was off and that X/Y can be homed without Z.') }}</p>
+    <div class="control-group">
+        <label class="control-label">{{ _('Lift Z before homing') }}</label>
+        <div class="controls">
+            <div class="input-append">
+                <input type="number" min="0" step="any" class="input-mini" data-bind="value: settings.plugins.power_panic.fallback_z_lift">
+                <span class="add-on">mm</span>
+            </div>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">{{ _('X/Y homing command') }}</label>
+        <div class="controls">
+            <input type="text" class="input-medium" data-bind="value: settings.plugins.power_panic.fallback_home_command">
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">{{ _('X/Y travel feedrate') }}</label>
+        <div class="controls">
+            <div class="input-append">
+                <input type="number" min="1" class="input-mini" data-bind="value: settings.plugins.power_panic.fallback_xy_feedrate">
+                <span class="add-on">mm/min</span>
+            </div>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">{{ _('Extra G-code before resuming') }}</label>
+        <div class="controls">
+            <textarea rows="3" class="input-block-level" data-bind="value: settings.plugins.power_panic.fallback_extra_gcode"></textarea>
+        </div>
+    </div>
+</form>

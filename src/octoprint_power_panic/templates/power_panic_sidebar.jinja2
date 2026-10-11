@@ -1,0 +1,17 @@
+<div>
+    <p><strong data-bind="text: headline"></strong></p>
+    <p data-bind="visible: path">
+        <span data-bind="text: path"></span>
+        <span data-bind="visible: progress"> &middot; {{ _('at') }} <span data-bind="text: progress"></span></span>
+        <span data-bind="visible: outage"> &middot; {{ _('off for') }} <span data-bind="text: outage"></span></span>
+    </p>
+    <p data-bind="visible: mode"><small data-bind="text: mode"></small></p>
+    <ul data-bind="visible: reasons().length, foreach: reasons">
+        <li><small data-bind="text: $data"></small></li>
+    </ul>
+    <p class="text-error" data-bind="visible: error, text: error"></p>
+    <div>
+        <button class="btn btn-primary" data-bind="visible: canResume, click: resume">{{ _('Resume') }}</button>
+        <button class="btn btn-danger" data-bind="visible: canDiscard, click: discard">{{ _('Discard') }}</button>
+    </div>
+</div>
