@@ -1,0 +1,87 @@
+name: Release
+
+# Tags come from the version in pyproject.toml rather than an autotag action. The plugin is
+# installed by pinned tag-archive URL, so the tag and the packaged version must agree exactly;
+# deriving the tag from the file makes drift impossible instead of merely unlikely. To release:
+# bump the version and push to main. Docs-only and test-only pushes cut no release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**'
+      - '!**.md'
+      - '!tests/**'
+      - '!.github/**'
+      - '!renovate.json'
+      - '!.pre-commit-config.yaml'
+      - '!Taskfile.yml'
+  # Recovery: a workflow fix under .github/ does not trigger the push above.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Read the version from pyproject.toml
+        id: version
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      # Never move or overwrite a published tag: if it exists, this push is not a release.
+      - name: Skip if the tag already exists
+        id: check
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists; nothing to release."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the packages
+        if: steps.check.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python -m pip install "build==1.6.1"
+          python -m build
+          ls dist/*"${VERSION}"*.whl dist/*"${VERSION}"*.tar.gz
+
+      - name: Tag and release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          notes="Install: \`pip install https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.zip\`, or paste that URL into OctoPrint's Plugin Manager."
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes "$notes" \
+            --generate-notes
