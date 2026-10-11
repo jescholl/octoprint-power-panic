@@ -1,0 +1,43 @@
+[build-system]
+# 77+ for the SPDX `license` string below; no setup.py shim needed.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "octoprint-power-panic"
+# Static, not setuptools-scm: the plugin is installed from a GitHub tag archive,
+# which has no git metadata. The Release workflow tags v<version> from this line.
+version = "0.1.0"
+description = "Resume OctoPrint prints after a power loss, using Prusa firmware's power-panic recovery where available"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Jason Scholl" }]
+classifiers = ["Framework :: OctoPrint"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/jescholl/octoprint-power-panic"
+
+[project.entry-points."octoprint.plugin"]
+# The entry point name is the plugin identifier (settings key, API path
+# /api/plugin/power_panic). It must be the package, not a submodule: OctoPrint
+# finds templates/ and static/ next to the entry point only for a package.
+power_panic = "octoprint_power_panic"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+octoprint_power_panic = ["templates/*.jinja2", "static/js/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

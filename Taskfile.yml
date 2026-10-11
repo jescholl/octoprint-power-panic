@@ -1,0 +1,31 @@
+# https://taskfile.dev
+version: "3"
+
+tasks:
+  install:
+    desc: Install the plugin (editable) and test deps into the current venv; OctoPrint must already be installed
+    cmds:
+      - python -m pip install -e . -r tests/requirements.txt
+
+  # pre-commit is installed separately (e.g. `pipx install pre-commit`): its own
+  # dependencies conflict with OctoPrint's when they share a virtualenv.
+
+  lint:
+    desc: Run the pre-commit hooks (ruff lint + format, file hygiene) on everything
+    cmds:
+      - pre-commit run --all-files
+
+  test:
+    desc: Unit and integration tests (integration runs a real OctoPrint against a simulated printer)
+    cmds:
+      - python -m pytest tests {{.CLI_ARGS}}
+
+  test-unit:
+    desc: Unit tests only (seconds)
+    cmds:
+      - python -m pytest tests/unit {{.CLI_ARGS}}
+
+  build:
+    desc: Build the sdist and wheel into dist/
+    cmds:
+      - python -m build
