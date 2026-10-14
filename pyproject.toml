@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 name = "octoprint-power-panic"
 # Static, not setuptools-scm: the plugin is installed from a GitHub tag archive,
 # which has no git metadata. The Release workflow tags v<version> from this line.
-version = "0.1.0"
+version = "0.1.1"
 description = "Resume OctoPrint prints after a power loss, using Prusa firmware's power-panic recovery where available"
 readme = "README.md"
 license = "MIT"
