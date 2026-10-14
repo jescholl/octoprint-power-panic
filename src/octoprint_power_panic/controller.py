@@ -49,7 +49,6 @@ class Settings:
     hold_heat: float = 60 * 60
     reconnect_window: float = 30 * 60
     reconnect_interval: float = 30
-    firmware_info_timeout: float = 15
     settle_timeout: float = 25
     probe_timeout: float = 5
     probe_attempts: int = 3
@@ -130,9 +129,10 @@ class Controller:
             self._enter_waiting(now)
 
     def on_connected(self, now):
+        # Firmware info and //action:paused can arrive before this event (or before
+        # the plugin started, when OctoPrint autoconnects first). They are cleared
+        # on disconnect, not here, so they are never lost to that race.
         self.connected = True
-        self._firmware = None
-        self._paused_seen = False
         snap = self.journal.snapshot()
         if snap and snap["status"] == INTERRUPTED:
             self._begin_detection(now)
@@ -140,6 +140,7 @@ class Controller:
     def on_disconnected(self, now):
         self.connected = False
         self._firmware = None
+        self._paused_seen = False
         if self.state in (DETECTING, PROBING, READING, PENDING, RESUMING, STARTING, FAILED):
             self.hold = False
             self._expecting_start = None
@@ -327,16 +328,20 @@ class Controller:
 
         elif self.state == DETECTING:
             fw = self._firmware
-            if isinstance(fw, tuple) and prusa.supports_host_recovery(fw):
-                waited = now - self._phase_started
-                if self._paused_seen or waited >= s.settle_timeout:
-                    self.state = PROBING
-                    self._attempts = 1
-                    self._deadline = now + s.probe_timeout
-                    self._send(prusa.PROBE_COMMAND)
-            elif fw is not None or now - self._phase_started >= s.firmware_info_timeout:
+            if fw == "other" or (isinstance(fw, tuple) and not prusa.supports_host_recovery(fw)):
                 self.hold = False
                 self._offer_fallback(now, "the printer's firmware has no host power-panic support")
+            elif self._paused_seen or now - self._phase_started >= s.settle_timeout:
+                # Probe even when the firmware hasn't identified itself: after a power
+                # panic the connect reset replays the recovery and a real MK3S left
+                # OctoPrint's M115 unanswered. M79 is harmless on other firmware.
+                self.state = PROBING
+                self._attempts = 1
+                self._deadline = now + s.probe_timeout
+                if fw is None:
+                    self._send("M115", prusa.PROBE_COMMAND)
+                else:
+                    self._send(prusa.PROBE_COMMAND)
 
         elif self.state == PROBING and now >= self._deadline:
             if self._attempts < s.probe_attempts:
@@ -504,8 +509,9 @@ class Controller:
     def discard(self, now, by="user"):
         if not self.journal.active and self.state == IDLE:
             return False
-        prusa_host_recovery = isinstance(self._firmware, tuple) and prusa.supports_host_recovery(
-            self._firmware
+        # A recovery-ready reply proves Prusa host recovery even if M115 never answered.
+        prusa_host_recovery = self._ready_kind is not None or (
+            isinstance(self._firmware, tuple) and prusa.supports_host_recovery(self._firmware)
         )
         firmware_pending = self.state in (PROBING, READING) or (
             (self.recovery or {}).get("mode") == FIRMWARE and self.state in (PENDING, FAILED)

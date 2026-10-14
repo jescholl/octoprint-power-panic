@@ -98,6 +98,7 @@ class FakePrinter:
         self._alive = True
         self._powered = False
         self._paused = False
+        self._recovering = False
         self._last_n = 0
         self._completed = 0
         self._targets = {"T": 0.0, "B": 0.0}
@@ -171,10 +172,11 @@ class FakePrinter:
             self._planner.clear()
         while not self._in.empty():
             self._in.get_nowait()
+        eeprom = self.control.eeprom()
+        self._recovering = bool(self.prusa and eeprom.get("pending"))
         self._powered = True
         self._say("start")
-        eeprom = self.control.eeprom()
-        if self.prusa and eeprom.get("pending"):
+        if self._recovering:
             # Firmware restores Z, mesh, XY and temperatures from EEPROM, then parks.
             time.sleep(self.cfg.get("recovery_time", 1.0))
             self._targets = {"T": 0.0, "B": eeprom.get("bed", 0.0)}
@@ -254,7 +256,16 @@ class FakePrinter:
             self._last_n = int(value.group(1)) if value else 0
             self._say("ok")
         elif code == "M115":
-            if self.prusa:
+            if (
+                self._recovering
+                and self.control.eeprom().get("pending")
+                and self.cfg.get("silent_m115_in_recovery", True)
+            ):
+                # Seen on a real MK3S+ (3.14.1, 2026-10-14): after the connect reset
+                # replays a power-panic recovery, M115 never got its FIRMWARE_NAME
+                # reply. The exact firmware cause is unknown; the effect is modelled.
+                pass
+            elif self.prusa:
                 self._say(
                     "FIRMWARE_NAME:Prusa-Firmware 3.14.1 based on Marlin "
                     "FIRMWARE_URL:https://github.com/prusa3d/Prusa-Firmware PROTOCOL_VERSION:1.0 "

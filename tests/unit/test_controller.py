@@ -368,13 +368,50 @@ def test_fallback_is_never_automatic_and_starts_recovery_file(rig):
     assert rig.c.state == C.IDLE
 
 
-def test_no_firmware_info_falls_back_after_timeout(rig):
+def test_unidentified_firmware_is_still_probed(tmp_path):
+    # Real MK3S, 2026-10-14: after the connect reset replayed the recovery, M115
+    # was never answered. The plugin must still find the firmware's recovery.
+    rig = Rig(tmp_path, auto_resume=False)
     rig.print_some()
     rig.lose_host()
     rig.c.on_connected(rig.now)
-    rig.advance(rig.settings.firmware_info_timeout)
+    rig.c.on_action("paused", rig.now)
+    rig.c.tick(rig.now)
+    assert rig.sent(rig.actions()) == ["M115", 'M79 S"OP"']
+    assert rig.c.hold
+    rig.answer_probe()
+    rig.answer_line(25)
+    rig.actions()
+    assert rig.c.state == C.PENDING
+    assert rig.c.recovery["mode"] == C.FIRMWARE
+    # The recovery reply alone proves Prusa host recovery, so discard stops it.
+    rig.c.discard(rig.now)
+    assert rig.sent(rig.actions()) == ["M603"]
+
+
+def test_unidentified_firmware_without_recovery_falls_back(rig):
+    rig.print_some()
+    rig.lose_host()
+    rig.c.on_connected(rig.now)
+    rig.advance(rig.settings.settle_timeout)
+    for _ in range(rig.settings.probe_attempts):
+        rig.advance(rig.settings.probe_timeout)
     assert rig.c.state == C.PENDING
     assert rig.c.recovery["mode"] == C.FALLBACK
+    assert not rig.c.hold
+
+
+def test_firmware_info_before_connected_event_is_kept(rig):
+    # OctoPrint autoconnects before the plugin starts, so the firmware report and
+    # the printer's "paused" can arrive before on_connected.
+    rig.print_some()
+    rig.c.on_disconnected(rig.now)
+    rig.lose_host()
+    rig.c.on_firmware_info(PRUSA)
+    rig.c.on_action("paused", rig.now)
+    rig.c.on_connected(rig.now)
+    rig.c.tick(rig.now)
+    assert rig.sent(rig.actions()) == ['M79 S"OP"']
 
 
 # -- connection handling -----------------------------------------------------------
