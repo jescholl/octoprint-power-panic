@@ -84,6 +84,7 @@ class Controller:
         self._next_connect = None
         self._pending_since = None
         self._next_keepalive = None
+        self._last_resync = None
 
     # -- plumbing --------------------------------------------------------
 
@@ -306,6 +307,41 @@ class Controller:
                 self.journal.clear()
                 self._reset_idle()
                 self._notify("discarded", by="printer")
+
+    def on_resend_request(self, now):
+        """The printer asked the host to resend a line. Returns True to neutralise it.
+
+        The firmware's boot recovery runs ``M110 N<saved line>``, so after it the
+        printer rejects every numbered line OctoPrint sends (OctoPrint numbers
+        everything until the firmware identifies itself), including the plugin's
+        M115 and M79. OctoPrint can't satisfy those resends and stalls. While a
+        recovery is being detected or awaits a decision, the plugin answers with
+        ``M110 N0`` -- accepted at any line number, and it touches neither the saved
+        line in EEPROM nor the copy M602 restores from -- then probes again.
+        """
+        if self.journal.printing:
+            return False
+        if self.state == RESUMING:
+            # M602 always ends with "Resend: <line+1>". If OctoPrint numbered the M602
+            # itself, its counter is one past that and it would resend the M602. The
+            # job's own M110 N0 resyncs everything next, so the request is moot.
+            return True
+        if self.state not in (DETECTING, PROBING, READING, PENDING, FAILED):
+            return False
+        if self._last_resync is not None and now - self._last_resync < 1:
+            return True
+        self._last_resync = now
+        self._info("Printer rejected a numbered line; resyncing line numbers with M110 N0")
+        self._send("M110 N0")
+        # The printer rebooted under us: have it identify itself again, which is also
+        # what makes OctoPrint stop numbering idle commands.
+        self._firmware = None
+        if self.state in (PROBING, READING):
+            # The probe or the read was among the rejected lines: start over.
+            self.state = DETECTING
+            self._paused_seen = True
+            self._phase_started = now
+        return True
 
     def should_block(self, command, tags):
         """True if a queued command must not reach the printer right now."""

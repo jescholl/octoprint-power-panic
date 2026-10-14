@@ -401,6 +401,56 @@ def test_unidentified_firmware_without_recovery_falls_back(rig):
     assert not rig.c.hold
 
 
+def test_rejected_lines_during_detection_are_resynced_and_reprobed(rig):
+    # Real MK3S, 2026-10-14: the boot recovery's "M110 N<saved>" made the printer
+    # reject OctoPrint's numbered M115 and the plugin's M79 ("Resend: <saved+1>").
+    rig.print_some()
+    rig.lose_host()
+    rig.c.on_connected(rig.now)
+    rig.c.on_action("paused", rig.now)
+    rig.c.tick(rig.now)
+    assert rig.sent(rig.actions()) == ["M115", 'M79 S"OP"']
+
+    assert rig.c.on_resend_request(rig.now)
+    assert rig.sent(rig.actions()) == ["M110 N0"]
+    assert rig.c.on_resend_request(rig.now + 0.1)  # same burst: no second resync
+    assert rig.sent(rig.actions()) == []
+
+    rig.c.tick(rig.now)
+    assert rig.sent(rig.actions()) == ["M115", 'M79 S"OP"']
+    assert rig.c.hold
+
+
+def test_resend_requests_while_printing_and_resuming(rig):
+    rig.print_some()
+    assert not rig.c.on_resend_request(rig.now)  # a normal print's resends are OctoPrint's
+    rig.lose_host()
+    rig.connect_prusa()
+    rig.answer_probe()
+    rig.answer_line(25)
+    rig.actions()
+    assert rig.c.state == C.RESUMING
+    # M602 answers "Resend: <line+1>": neutralised (OctoPrint may have numbered the
+    # M602 itself and would resend it), but nothing is sent and the state holds.
+    assert rig.c.on_resend_request(rig.now)
+    assert rig.sent(rig.actions()) == []
+    assert rig.c.state == C.RESUMING
+
+
+def test_resync_reidentifies_a_known_printer(rig):
+    # Printer-only blip: the firmware was identified before it rebooted.
+    rig.print_some()
+    rig.c.on_firmware_info(PRUSA)
+    rig.c.on_received("start", rig.now)
+    rig.c.on_print_cancelled(rig.now)
+    rig.c.on_action("paused", rig.now)
+    rig.c.tick(rig.now)
+    assert rig.sent(rig.actions()) == ['M79 S"OP"']
+    rig.c.on_resend_request(rig.now)
+    rig.c.tick(rig.now)
+    assert rig.sent(rig.actions()) == ["M110 N0", "M115", 'M79 S"OP"']
+
+
 def test_firmware_info_before_connected_event_is_kept(rig):
     # OctoPrint autoconnects before the plugin starts, so the firmware report and
     # the printer's "paused" can arrive before on_connected.

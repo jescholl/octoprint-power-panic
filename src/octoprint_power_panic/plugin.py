@@ -271,8 +271,19 @@ class PowerPanicPlugin(
         self._journal.record_line(line, pos)
 
     def hook_gcode_received(self, comm, line, *args, **kwargs):
+        stripped = line.strip()
+        if stripped.startswith("Resend:"):
+            with self._lock:
+                neutralise = self._controller.on_resend_request(time.time())
+            current = getattr(comm, "_current_line", None)
+            if neutralise and current is not None:
+                self._wake.set()
+                # OctoPrint ignores a resend of exactly the line it is about to send,
+                # instead of stalling on one it has no history for.
+                return f"Resend: {current}\n"
+            return line
         # Cheap pre-filter: this hook sees every line the printer sends.
-        if line.strip() in ("INT4", "start") or self._controller.state == "reading":
+        if stripped in ("INT4", "start") or self._controller.state == "reading":
             with self._lock:
                 self._controller.on_received(line, time.time())
             self._wake.set()

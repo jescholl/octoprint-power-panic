@@ -42,6 +42,8 @@ DISABLED_PLUGINS = [
 SERIAL = {
     "timeout": {"communication": 1.0, "communicationBusy": 1.0, "connection": 3.0},
     "maxCommunicationTimeouts": {"idle": 2, "printing": 2, "long": 2},
+    # serial.log next to octoprint.log: the protocol traffic is what these tests are about.
+    "log": True,
 }
 
 

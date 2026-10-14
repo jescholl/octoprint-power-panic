@@ -99,6 +99,7 @@ class FakePrinter:
         self._powered = False
         self._paused = False
         self._recovering = False
+        self._recover_after_first_line = False
         self._last_n = 0
         self._completed = 0
         self._targets = {"T": 0.0, "B": 0.0}
@@ -173,14 +174,28 @@ class FakePrinter:
         while not self._in.empty():
             self._in.get_nowait()
         eeprom = self.control.eeprom()
-        self._recovering = bool(self.prusa and eeprom.get("pending"))
+        recovery = bool(self.prusa and eeprom.get("pending"))
+        self._recovering = False
+        # Seen on the real printer: OctoPrint's connect handshake is answered at once;
+        # right after that the recovery takes over the command queue, and host lines
+        # sent from then on wait behind it. _process flips _recovering after the
+        # first line so the switch can't race OctoPrint's next command.
+        self._recover_after_first_line = recovery
         self._powered = True
         self._say("start")
-        if self._recovering:
+        if recovery:
+            while not self._recovering and self._powered:
+                time.sleep(0.01)
             # Firmware restores Z, mesh, XY and temperatures from EEPROM, then parks.
             time.sleep(self.cfg.get("recovery_time", 1.0))
             self._targets = {"T": 0.0, "B": eeprom.get("bed", 0.0)}
+            # restore_print_from_eeprom enqueues "M110 N<saved line>" (power_panic.cpp
+            # :514), so from here on the firmware expects the host's next numbered line
+            # to be saved+1 and rejects anything else. On a real MK3S+ (2026-10-14) this
+            # is what swallowed OctoPrint's numbered M115 and the plugin's M79.
+            self._last_n = eeprom["line"]
             self._paused = True
+            self._recovering = False
             self.control.log("events.jsonl", event="boot_recovery", line=eeprom["line"])
             self._say("//action:paused")
 
@@ -210,6 +225,14 @@ class FakePrinter:
                 continue
             if not self._powered:
                 continue
+            # The connect handshake (M110) is answered at once; the first command after
+            # it (OctoPrint's M115) lands behind the boot recovery's own queued
+            # commands, as on the real printer, and so sees the recovery's line number.
+            if self._recover_after_first_line and "M110" not in raw:
+                self._recover_after_first_line = False
+                self._recovering = True
+            while self._recovering and self._powered:
+                time.sleep(0.02)
             try:
                 self._handle(raw)
             except Exception as e:  # pragma: no cover - surfaced in octoprint.log
@@ -256,16 +279,7 @@ class FakePrinter:
             self._last_n = int(value.group(1)) if value else 0
             self._say("ok")
         elif code == "M115":
-            if (
-                self._recovering
-                and self.control.eeprom().get("pending")
-                and self.cfg.get("silent_m115_in_recovery", True)
-            ):
-                # Seen on a real MK3S+ (3.14.1, 2026-10-14): after the connect reset
-                # replays a power-panic recovery, M115 never got its FIRMWARE_NAME
-                # reply. The exact firmware cause is unknown; the effect is modelled.
-                pass
-            elif self.prusa:
+            if self.prusa:
                 self._say(
                     "FIRMWARE_NAME:Prusa-Firmware 3.14.1 based on Marlin "
                     "FIRMWARE_URL:https://github.com/prusa3d/Prusa-Firmware PROTOCOL_VERSION:1.0 "
