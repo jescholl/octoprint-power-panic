@@ -150,7 +150,7 @@ def test_automatic_firmware_resume(rig):
 
     rig.answer_line(25)
     actions = rig.actions()
-    assert rig.sent(actions) == ["M110 N25", "M602"]
+    assert rig.sent(actions) == ["M115", "M110 N25", "M602"]
     assert rig.c.state == C.RESUMING
     assert rig.c.hold
 
@@ -199,7 +199,7 @@ def test_manual_when_auto_resume_off(tmp_path):
     assert rig.c.hold  # nothing may disturb the firmware while a person decides
 
     rig.c.resume(rig.now)
-    assert rig.sent(rig.actions()) == ["M110 N25", "M602"]
+    assert rig.sent(rig.actions()) == ["M115", "M110 N25", "M602"]
 
 
 @pytest.mark.parametrize(
@@ -259,7 +259,7 @@ def test_printer_lcd_resume_and_stop(tmp_path):
     rig.answer_line(25)
     rig.actions()
     rig.c.on_action("resume", rig.now)
-    assert rig.sent(rig.actions()) == ["M110 N25", "M602"]
+    assert rig.sent(rig.actions()) == ["M115", "M110 N25", "M602"]
 
     rig2 = Rig(tmp_path / "2", auto_resume=False)
     (tmp_path / "2").mkdir()
@@ -300,6 +300,28 @@ def test_another_print_is_blocked_while_firmware_recovery_pending(tmp_path):
     assert ("cancel_print",) in actions
     assert "blocked" in rig.notices(actions)
     assert rig.journal.snapshot()["job"]["path"] == "part.gcode"
+
+
+def test_job_start_is_retried_then_nozzle_lifted_and_cooled(rig):
+    rig.print_some()
+    rig.lose_host()
+    rig.connect_prusa()
+    rig.answer_probe()
+    rig.answer_line(25)
+    rig.c.on_action("resumed", rig.now)
+    assert ("start_job", "part.gcode", 2500) in rig.actions()
+
+    # First timeout: the printer is in position after M602, so just try again.
+    rig.advance(rig.settings.start_timeout + 1)
+    assert rig.actions() == [("start_job", "part.gcode", 2500)]
+    assert rig.c.state == C.STARTING
+
+    # Second timeout: give up, but get the hot nozzle off the part first.
+    rig.advance(rig.settings.start_timeout + 1)
+    actions = rig.actions()
+    assert rig.sent(actions) == ["G91", "G1 E-2 F2400", "G1 Z10 F600", "G90", "M104 S0"]
+    assert rig.c.state == C.FAILED
+    assert not rig.c.hold
 
 
 def test_resume_timeout_fails(rig):
@@ -435,6 +457,42 @@ def test_resend_requests_while_printing_and_resuming(rig):
     assert rig.c.on_resend_request(rig.now)
     assert rig.sent(rig.actions()) == []
     assert rig.c.state == C.RESUMING
+
+
+def test_fan_is_restored_before_the_job_restarts(rig):
+    # Real MK3S, 2026-10-14: the resumed layers' cooling couldn't be confirmed, and
+    # the part failed. Re-send the file's last fan command before streaming resumes.
+    rig.c.on_connected(rig.now)
+    rig.c.on_print_started("part.gcode", "local", rig.now)
+    for n in range(1, 41):
+        rig.journal.record_line(n, n * 100)
+    rig.journal.update_state(fan="M106 S125")
+    rig.journal.flush()
+    rig.actions()
+    rig.lose_host()
+    rig.connect_prusa()
+    rig.answer_probe()
+    rig.answer_line(25)
+    rig.actions()
+    rig.c.on_action("resumed", rig.now)
+    assert rig.actions() == [("send", ["M106 S125"]), ("start_job", "part.gcode", 2500)]
+
+
+def test_resends_neutralised_until_the_job_resets_line_numbers(rig):
+    rig.print_some()
+    rig.lose_host()
+    rig.connect_prusa()
+    rig.answer_probe()
+    rig.answer_line(25)
+    rig.c.on_action("resumed", rig.now)
+    rig.actions()
+    assert rig.c.state == C.STARTING
+    # A numbered command rejected after M602, before the job's own M110 N0.
+    assert rig.c.on_resend_request(rig.now)
+    rig.c.on_job_numbering_reset()
+    # From the job's M110 N0 on, resends are real and belong to OctoPrint.
+    assert not rig.c.on_resend_request(rig.now)
+    assert rig.sent(rig.actions()) == []
 
 
 def test_resync_reidentifies_a_known_printer(rig):

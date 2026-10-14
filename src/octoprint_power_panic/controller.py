@@ -85,6 +85,8 @@ class Controller:
         self._pending_since = None
         self._next_keepalive = None
         self._last_resync = None
+        self._job_numbering_reset = False
+        self._start_attempts = 0
 
     # -- plumbing --------------------------------------------------------
 
@@ -295,8 +297,16 @@ class Controller:
             if self.state == RESUMING:
                 self.hold = False
                 self.state = STARTING
+                self._job_numbering_reset = False
+                self._start_attempts = 1
                 self._expecting_start = self.recovery["path"]
                 self._deadline = now + self.settings.start_timeout
+                fan = ((self.journal.snapshot() or {}).get("state") or {}).get("fan")
+                if fan:
+                    # The firmware restores the fan from its own saved copy, but
+                    # nothing confirms that; re-send the last fan command the file
+                    # gave so the resumed layers are cooled as sliced.
+                    self._send(fan)
                 self._do("start_job", self.recovery["path"], self.recovery["pos"])
         elif name == prusa.ACTION_RESUME:
             if self.state == PENDING and self.recovery["mode"] == FIRMWARE:
@@ -321,10 +331,11 @@ class Controller:
         """
         if self.journal.printing:
             return False
-        if self.state == RESUMING:
-            # M602 always ends with "Resend: <line+1>". If OctoPrint numbered the M602
-            # itself, its counter is one past that and it would resend the M602. The
-            # job's own M110 N0 resyncs everything next, so the request is moot.
+        if self.state == RESUMING or (self.state == STARTING and not self._job_numbering_reset):
+            # M602 always ends with "Resend: <line+1>", and a numbered command sent
+            # after it (before the job starts) is rejected too. OctoPrint would resend
+            # the M602 or stall; the job's own M110 N0 resyncs everything, so until
+            # that has gone out these requests are moot. (Real-printer blip gap.)
             return True
         if self.state not in (DETECTING, PROBING, READING, PENDING, FAILED):
             return False
@@ -342,6 +353,11 @@ class Controller:
             self._paused_seen = True
             self._phase_started = now
         return True
+
+    def on_job_numbering_reset(self):
+        """The resumed job's own M110 N0 went out; resends are OctoPrint's again."""
+        if self.state == STARTING:
+            self._job_numbering_reset = True
 
     def should_block(self, command, tags):
         """True if a queued command must not reach the printer right now."""
@@ -411,8 +427,25 @@ class Controller:
             self._fail("The printer did not confirm the resume.", firmware=True)
 
         elif self.state == STARTING and now >= self._deadline:
-            self._expecting_start = None
-            self._fail("The resumed print did not start.", firmware=False)
+            if self._start_attempts < 2 and self.recovery["mode"] == FIRMWARE:
+                # The printer is homed, levelled, heated and in position after M602;
+                # streaming the file is all that is left, so try that again first.
+                self._start_attempts += 1
+                self._deadline = now + s.start_timeout
+                self._info("Resumed job did not start; trying again")
+                self._do("start_job", self.recovery["path"], self.recovery["pos"])
+            else:
+                self._expecting_start = None
+                if self.recovery["mode"] == FIRMWARE:
+                    # M602 left a hot nozzle resting on the part at print height.
+                    # Retract, lift clear and cool it so residual heat can't melt the
+                    # part; the bed stays on so the part stays stuck down.
+                    self._send("G91", "G1 E-2 F2400", "G1 Z10 F600", "G90", "M104 S0")
+                self._fail(
+                    "The resumed print did not start. The nozzle was lifted clear of the "
+                    "part and its heater turned off.",
+                    firmware=False,
+                )
 
     # -- decisions -----------------------------------------------------
 
@@ -537,9 +570,12 @@ class Controller:
         # M110 first: the firmware answers M602 with "Resend: <line+1>". With
         # OctoPrint's counter already at line+1 that request is a known no-op;
         # otherwise OctoPrint treats it as a protocol error and disconnects.
+        # M115 first: once the firmware has identified itself OctoPrint stops
+        # numbering idle commands, so the M602 goes out unnumbered and can't be
+        # resent after the firmware rewinds its line counter.
         self.state = RESUMING
         self._deadline = now + self.settings.resume_timeout
-        self._send(f"M110 N{self.recovery['line']}", prusa.RESUME_COMMAND)
+        self._send("M115", f"M110 N{self.recovery['line']}", prusa.RESUME_COMMAND)
         self._notify("resuming", **self.recovery)
 
     def discard(self, now, by="user"):

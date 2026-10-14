@@ -133,6 +133,7 @@ class PowerPanicPlugin(
             self._printer.commands(args[0], tags=tags)
         elif kind == "start_job":
             path, pos = args
+            self._wait_until_ready()
             self._logger.info("Resuming %s from byte %d", path, pos)
             self._printer.select_file(path, False, printAfterSelect=True, pos=pos, tags=tags)
         elif kind == "start_fallback":
@@ -172,7 +173,18 @@ class PowerPanicPlugin(
             "local", target, DiskFileWrapper(os.path.basename(target), tmp), allow_overwrite=True
         )
         self._logger.info("Starting generic recovery file %s", target)
+        self._wait_until_ready()
         self._printer.select_file(target, False, printAfterSelect=True, tags=tags)
+
+    def _wait_until_ready(self, timeout=30):
+        """Wait for OctoPrint to be operational and idle before starting a job.
+
+        OctoPrint silently ignores a start while it is still busy, e.g. finishing
+        the cancel of the job a printer reset interrupted.
+        """
+        end = time.monotonic() + timeout
+        while not self._printer.is_ready() and time.monotonic() < end:
+            time.sleep(0.2)
 
     def _publish(self, kind, payload):
         status = self._controller.status()
@@ -235,9 +247,14 @@ class PowerPanicPlugin(
     def hook_gcode_sent(
         self, comm, phase, cmd, cmd_type, gcode, subcode=None, tags=None, *args, **kwargs
     ):
+        tags = tags or set()
+        if gcode == "M110" and "trigger:comm.start_print" in tags:
+            # The resumed job's own line-number reset: from here on, resend requests
+            # are real and OctoPrint must handle them.
+            with self._lock:
+                self._controller.on_job_numbering_reset()
         if not self._journal.printing:
             return
-        tags = tags or set()
         if gcode == "M110":
             # A renumbering mid-print invalidates the line history, except when it
             # is OctoPrint resyncing with a printer that just reset: that history is

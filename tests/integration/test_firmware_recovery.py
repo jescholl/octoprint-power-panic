@@ -1,6 +1,5 @@
 """Prusa firmware path, against the simulated MK3S (see tests/support/fake_printer.py)."""
 
-import pytest
 from conftest import make_gcode
 
 LINES = 600
@@ -131,14 +130,6 @@ def test_printer_only_outage_with_octoprint_up(make_rig):
     assert_firmware_recovery_untouched(rig)
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="Known, timing-dependent gap since the simulator models the boot recovery's "
-    "M110 N<saved line>: with OctoPrint still connected through the printer's reboot, a "
-    "stale 'Resend' can arrive between M602 and the job's own M110 N0 and OctoPrint acts "
-    "on it, so the resumed job never starts. Fails on 1.11.8 every time, on 2.0.0rc6 "
-    "intermittently. The full-outage path is unaffected. To be fixed.",
-)
 def test_printer_blip_while_connected(make_rig):
     # Mains returns before OctoPrint times out: the printer reboots, sends "start",
     # and OctoPrint cancels the job. That cancel must not wipe the recovery.
@@ -151,3 +142,6 @@ def test_printer_blip_while_connected(make_rig):
     assert rig.wait_for(lambda: len(rig.executed_body()) >= LINES, 120), rig.diagnostics()
     assert_printed_exactly_once(rig)
     assert_firmware_recovery_untouched(rig)
+    # It must resume first time: the start retry is a backstop and would otherwise
+    # hide a job start OctoPrint ignored (it was still cancelling the old job).
+    assert "trying again" not in rig.log_text()
