@@ -18,6 +18,11 @@ from .tracker import StreamTracker
 
 OCTOPRINT_MAJOR = int(octoprint.__version__.split(".")[0])
 TICK = 0.2
+# How often the power plugin is asked; its helper may do I/O.
+POWER_POLL = 5.0
+# PSU Control's public helper. Power plugins that plug into PSU Control (Tasmota,
+# TP-Link, Tuya, ...) report through it too, and any other plugin can offer the same.
+DEFAULT_POWER_HELPER = "get_psu_state"
 
 CUSTOM_EVENTS = [
     "recovery_pending",
@@ -50,6 +55,8 @@ class PowerPanicPlugin(
             self._journal, self._controller_settings, self._file_identity, logger=self._logger
         )
         self._warned_line_counter = False
+        self._power_source = None  # last logged (plugin, helper), or "none"
+        self._next_power_poll = 0.0
 
     # -- settings --------------------------------------------------------
 
@@ -59,9 +66,13 @@ class PowerPanicPlugin(
             "auto_max_outage_minutes": 10,
             "max_age_hours": 24,
             "hold_heat_minutes": 60,
-            "reconnect_minutes": 30,
+            # Waits between reconnect attempts double up to this maximum.
+            "reconnect_max_interval_minutes": 60,
             # Not in the settings UI; tests shorten it.
             "reconnect_interval_seconds": 30,
+            # "<plugin identifier>:<helper>" returning True/False for printer power.
+            # Empty: any enabled plugin offering a get_psu_state helper (PSU Control).
+            "power_state_helper": "",
             "fallback_z_lift": 5,
             "fallback_home_command": "G28 X Y",
             "fallback_xy_feedrate": 3000,
@@ -75,9 +86,51 @@ class PowerPanicPlugin(
             auto_max_outage=s.get_float(["auto_max_outage_minutes"]) * 60,
             max_age=s.get_float(["max_age_hours"]) * 3600,
             hold_heat=s.get_float(["hold_heat_minutes"]) * 60,
-            reconnect_window=s.get_float(["reconnect_minutes"]) * 60,
             reconnect_interval=s.get_float(["reconnect_interval_seconds"]),
+            reconnect_max_interval=s.get_float(["reconnect_max_interval_minutes"]) * 60,
         )
+
+    # -- printer power ---------------------------------------------------
+
+    def _power_helper(self):
+        """The (plugin, helper name, callable) to ask for printer power, or None."""
+        configured = (self._settings.get(["power_state_helper"]) or "").strip()
+        if configured:
+            plugin, _, name = configured.partition(":")
+            candidates = [(plugin.strip(), name.strip() or DEFAULT_POWER_HELPER)]
+        else:
+            # PSU Control first if present, then any other plugin offering the helper.
+            plugins = sorted(
+                self._plugin_manager.enabled_plugins, key=lambda k: (k != "psucontrol", k)
+            )
+            candidates = [(p, DEFAULT_POWER_HELPER) for p in plugins if p != self._identifier]
+        for plugin, name in candidates:
+            helpers = self._plugin_manager.get_helpers(plugin, name)
+            if helpers and callable(helpers.get(name)):
+                return plugin, name, helpers[name]
+        return None
+
+    def _read_power(self):
+        """True or False as the power plugin reports it; None if nothing can tell."""
+        found = self._power_helper()
+        source = found[:2] if found else "none"
+        if source != self._power_source:
+            self._power_source = source
+            if found:
+                self._logger.info("Reading printer power from %s.%s", *source)
+            else:
+                self._logger.info("No power plugin found; reconnects back off on their own")
+        if not found:
+            return None
+        try:
+            value = found[2]()
+        except Exception:
+            self._logger.exception("Reading printer power from %s.%s failed", *source)
+            return None
+        # PSU Control's GPIO sensing reports 0/1 rather than a bool.
+        if isinstance(value, (bool, int)) and value in (0, 1):
+            return bool(value)
+        return None
 
     def get_template_configs(self):
         return [
@@ -116,6 +169,13 @@ class PowerPanicPlugin(
             self._wake.wait(TICK)
             self._wake.clear()
             try:
+                # Only reconnect decisions use it, so only ask while waiting for the printer.
+                waiting = self._controller.state == "waiting_for_printer"
+                if waiting and time.monotonic() >= self._next_power_poll:
+                    self._next_power_poll = time.monotonic() + POWER_POLL
+                    power = self._read_power()  # outside the lock: it calls another plugin
+                    with self._lock:
+                        self._controller.on_power_state(power, time.time())
                 with self._lock:
                     self._controller.tick(time.time())
                     actions = self._controller.take_actions()

@@ -41,13 +41,20 @@
         </div>
     </div>
     <div class="control-group">
-        <label class="control-label">{{ _('Retry connecting for') }}</label>
+        <label class="control-label">{{ _('Longest wait between connection retries') }}</label>
         <div class="controls">
             <div class="input-append">
-                <input type="number" min="0" class="input-mini" data-bind="value: settings.plugins.power_panic.reconnect_minutes">
+                <input type="number" min="1" class="input-mini" data-bind="value: settings.plugins.power_panic.reconnect_max_interval_minutes">
                 <span class="add-on">min</span>
             </div>
-            <span class="help-block">{{ _('OctoPrint only tries to connect once at startup. While an interrupted print is pending, keep retrying for this long. 0 turns retrying off.') }}</span>
+            <span class="help-block">{{ _('OctoPrint only tries to connect once at startup. While an interrupted print is pending the plugin keeps retrying, waiting twice as long after each attempt (from 30 s) up to this, until it connects, the recovery is discarded, or it is older than the limit above. It does not retry while a power plugin reports the printer is off, and tries again soon after it reports power back on.') }}</span>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">{{ _('Read printer power from') }}</label>
+        <div class="controls">
+            <input type="text" class="input-medium" placeholder="psucontrol:get_psu_state" data-bind="value: settings.plugins.power_panic.power_state_helper">
+            <span class="help-block">{{ _('A plugin helper returning whether the printer has power, as plugin:helper. Leave empty to use any plugin offering get_psu_state, such as PSU Control.') }}</span>
         </div>
     </div>
 

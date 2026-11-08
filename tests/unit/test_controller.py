@@ -525,16 +525,112 @@ def test_firmware_info_before_connected_event_is_kept(rig):
 # -- connection handling -----------------------------------------------------------
 
 
-def test_reconnects_while_waiting_then_gives_up(tmp_path):
-    rig = Rig(tmp_path, reconnect_interval=30, reconnect_window=100)
+def connect_times(rig, seconds, step=10):
+    """Advance in steps; return the offsets (from now) at which a connect was asked."""
+    start, times = rig.now, []
+    for _ in range(int(seconds / step)):
+        rig.advance(step)
+        times += [rig.now - start] * sum(1 for a in rig.actions() if a == ("connect",))
+    return times
+
+
+def waiting_rig(tmp_path, **settings):
+    rig = Rig(tmp_path, **settings)
     rig.print_some()
     rig.c.on_disconnected(rig.now)
     rig.lose_host()
-    connects = 0
-    for _ in range(20):
-        rig.advance(10)
-        connects += sum(1 for a in rig.actions() if a == ("connect",))
-    assert connects == 3  # 30, 60, 90 s
+    assert rig.c.state == C.WAITING
+    return rig
+
+
+def test_reconnects_back_off_to_the_maximum_and_keep_going_when_power_is_unknown(tmp_path):
+    rig = waiting_rig(tmp_path, reconnect_interval=30, reconnect_max_interval=240, max_age=10**6)
+    times = connect_times(rig, 2000)
+    # Waits of 30, 60, 120, 240, then 240 for good: never gives up on its own.
+    assert times[:6] == [30, 90, 210, 450, 690, 930]
+    assert [b - a for a, b in zip(times[3:], times[4:], strict=False)] == [240] * (len(times) - 4)
+
+
+def test_backoff_settles_at_one_attempt_an_hour_by_default(tmp_path):
+    rig = waiting_rig(tmp_path, max_age=10**7)
+    times = connect_times(rig, 6 * 3600, step=30)
+    gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+    assert gaps[:7] == [60, 120, 240, 480, 960, 1920, 3600]
+    assert set(gaps[7:]) == {3600}
+
+
+def test_no_reconnects_while_the_printer_is_reported_off(tmp_path):
+    rig = waiting_rig(tmp_path)
+    rig.c.on_power_state(False, rig.now)
+    assert connect_times(rig, 3600) == []
+    assert rig.c.state == C.WAITING
+
+
+def test_power_coming_back_reconnects_soon_with_the_backoff_reset(tmp_path):
+    rig = waiting_rig(tmp_path, max_age=10**6)
+    rig.c.on_power_state(None, rig.now)
+    connect_times(rig, 1000)  # several unknown-power attempts: the wait is long now
+    rig.c.on_power_state(False, rig.now)
+    assert connect_times(rig, 7200) == []
+    rig.c.on_power_state(True, rig.now)
+    assert connect_times(rig, 100) == [30, 90]
+
+
+def test_attempts_with_power_on_also_back_off(tmp_path):
+    rig = waiting_rig(tmp_path, max_age=10**6)
+    rig.c.on_power_state(True, rig.now)
+    assert connect_times(rig, 500)[:4] == [30, 90, 210, 450]
+
+
+def test_a_connect_that_drops_again_does_not_restart_the_backoff(tmp_path):
+    # Every connect resets a Prusa printer: a link that keeps dropping must not be
+    # hammered every 30 s.
+    rig = waiting_rig(tmp_path, max_age=10**6)
+    assert connect_times(rig, 100) == [30, 90]
+    rig.c.on_connected(rig.now)
+    rig.c.on_disconnected(rig.now)
+    assert rig.c.state == C.WAITING
+    assert connect_times(rig, 200) == [120]
+
+
+def test_discard_while_waiting_stops_reconnecting(tmp_path):
+    rig = waiting_rig(tmp_path)
+    assert rig.c.discard(rig.now)
+    assert connect_times(rig, 3600) == []
+
+
+def test_old_interruption_expires_while_waiting(tmp_path):
+    rig = waiting_rig(tmp_path, max_age=3600)
+    rig.c.on_power_state(False, rig.now)  # never connects, so only the wait can expire it
+    rig.advance(3601)
+    assert rig.c.state == C.IDLE
+    assert not rig.journal.active
+    assert "expired" in rig.notices(rig.actions())
+    assert connect_times(rig, 3600) == []
+
+
+def test_finished_print_whose_done_event_was_lost_is_not_recovered(rig):
+    # 2026-11-08: a plugin blocked OctoPrint's event thread, PrintDone never arrived,
+    # and after a restart the finished print was offered for recovery.
+    rig.print_some(lines=50)  # 50 * 100 = 5000 = the file's size
+    rig.lose_host()
+    assert rig.c.state == C.IDLE
+    assert not rig.journal.active
+    assert connect_times(rig, 600) == []
+
+
+def test_finished_print_is_not_armed_when_the_link_drops_at_the_end(rig):
+    rig.print_some(lines=50)
+    rig.c.on_error("timeout")
+    rig.c.on_print_failed(rig.now)
+    assert rig.c.state == C.IDLE
+    assert not rig.journal.active
+
+
+def test_print_one_line_short_of_the_end_is_still_recovered(rig):
+    rig.print_some(lines=49)
+    rig.lose_host()
+    assert rig.c.state == C.WAITING
 
 
 def test_disconnect_during_detection_returns_to_waiting(rig):

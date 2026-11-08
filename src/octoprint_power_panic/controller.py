@@ -47,8 +47,9 @@ class Settings:
     auto_max_outage: float = 10 * 60
     max_age: float = 24 * 3600
     hold_heat: float = 60 * 60
-    reconnect_window: float = 30 * 60
+    # First wait before reconnecting; doubles after every attempt up to the maximum.
     reconnect_interval: float = 30
+    reconnect_max_interval: float = 60 * 60
     settle_timeout: float = 25
     probe_timeout: float = 5
     probe_attempts: int = 3
@@ -80,8 +81,11 @@ class Controller:
         self._attempts = 0
         self._phase_started = None
         self._ready_kind = None
-        self._waiting_since = None
+        # Printer power as a power plugin reports it: True, False, or None (unknown).
+        self.power = None
         self._next_connect = None
+        self._connect_delay = None
+        self._waiting_updated = None
         self._pending_since = None
         self._next_keepalive = None
         self._last_resync = None
@@ -128,6 +132,8 @@ class Controller:
             self._notify("failed", error=f"The power-panic journal could not be read: {e}")
             return
         if snap and snap["status"] == INTERRUPTED:
+            if self._drop_if_finished(snap):
+                return
             self._info("Found an interrupted print: %s", snap["job"]["path"])
             self._enter_waiting(now)
 
@@ -158,20 +164,58 @@ class Controller:
         if self.connected and snap and snap["status"] == INTERRUPTED and self.state != DETECTING:
             self._begin_detection(now)
 
+    def on_power_state(self, on, now):
+        """What a power plugin (PSU Control or similar) reports: True, False or None."""
+        was = self.power
+        self.power = on
+        if self.state == WAITING and on is True and was is False:
+            # Power just came back: try soon, and start the backoff over.
+            self._connect_delay = self.settings.reconnect_interval
+            self._next_connect = now + self._connect_delay
+
     def _enter_waiting(self, now):
+        snap = self.journal.snapshot()
+        if snap is None:
+            # Nothing left to recover (a FAILED state can outlive its journal).
+            self._reset_idle()
+            return
         self.state = WAITING
         self.recovery = None
-        self._waiting_since = now
-        self._next_connect = now + self.settings.reconnect_interval
+        self._waiting_updated = snap["updated"]
+        # The backoff is deliberately not reset here: a connect that succeeds and then
+        # drops again lands back here, and every connect resets the printer.
+        if self._connect_delay is None:
+            self._connect_delay = self.settings.reconnect_interval
+        self._next_connect = now + self._connect_delay
+
+    def _drop_if_finished(self, snap):
+        """A journal whose last line is the end of the file belongs to a finished print.
+
+        OctoPrint's PrintDone can go missing (2026-11-08: another plugin blocked the
+        event thread), which leaves the journal marked printing. Every line of the
+        file had been sent, so there is nothing left to resume.
+        """
+        lines = snap.get("lines") or []
+        if not lines or lines[-1][1] < snap["job"]["size"]:
+            return False
+        self._info("Dropping the journal of %s: the whole file had been sent", snap["job"]["path"])
+        self.journal.clear()
+        self._reset_idle()
+        return True
+
+    def _expire_if_old(self, snap, now):
+        age = now - snap["updated"]
+        if age <= self.settings.max_age:
+            return False
+        self._info("Discarding interrupted print older than the maximum age (%ds)", age)
+        self.journal.clear()
+        self._reset_idle()
+        self._notify("expired", path=snap["job"]["path"], age=age)
+        return True
 
     def _begin_detection(self, now):
         snap = self.journal.snapshot()
-        age = now - snap["updated"]
-        if age > self.settings.max_age:
-            self._info("Discarding interrupted print older than the maximum age (%ds)", age)
-            self.journal.clear()
-            self._reset_idle()
-            self._notify("expired", path=snap["job"]["path"], age=age)
+        if self._drop_if_finished(snap) or self._expire_if_old(snap, now):
             return
         self.state = DETECTING
         self.recovery = None
@@ -185,6 +229,7 @@ class Controller:
         self.hold = False
         self.recovery = None
         self._expecting_start = None
+        self._connect_delay = None
 
     # -- print lifecycle --------------------------------------------------
 
@@ -262,6 +307,8 @@ class Controller:
         self._interrupt(kind, now)
 
     def _interrupt(self, kind, now):
+        if self._drop_if_finished(self.journal.snapshot()):
+            return
         self.journal.interrupt(kind)
         self._info("Print interrupted (%s); recovery armed", kind)
         if self.connected:
@@ -370,13 +417,17 @@ class Controller:
     def tick(self, now):
         s = self.settings
         if self.state == WAITING:
-            if (
-                not self.connected
-                and now - self._waiting_since <= s.reconnect_window
-                and now >= self._next_connect
-            ):
-                self._next_connect = now + s.reconnect_interval
+            if now - self._waiting_updated > s.max_age:
+                # An interrupted journal's "updated" never changes, so this is checked
+                # without copying the journal every tick.
+                self._expire_if_old(self.journal.snapshot(), now)
+            elif not self.connected and self.power is not False and now >= self._next_connect:
+                # Power on or unknown. Known off: nothing could answer, so don't try
+                # (on_power_state schedules an attempt when it comes back).
                 self._do("connect")
+                ceiling = max(s.reconnect_max_interval, s.reconnect_interval)
+                self._connect_delay = min(self._connect_delay * 2, ceiling)
+                self._next_connect = now + self._connect_delay
 
         elif self.state == DETECTING:
             fw = self._firmware

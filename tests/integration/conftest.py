@@ -24,6 +24,7 @@ API_KEY = "powerpanictestkey0123456789abcdef"
 PORT = "FAKEPRINTER"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUPPORT = os.path.join(os.path.dirname(HERE), "support", "fake_printer.py")
+FAKE_POWER = os.path.join(os.path.dirname(HERE), "support", "fake_power.py")
 OCTOPRINT_MAJOR = int(octoprint.__version__.split(".")[0])
 
 DISABLED_PLUGINS = [
@@ -69,7 +70,8 @@ def _free_port():
 
 
 class Rig:
-    def __init__(self, tmp_path, plugin_settings, printer):
+    def __init__(self, tmp_path, plugin_settings, printer, power_plugin=False):
+        self.power_plugin = power_plugin
         self.basedir = tmp_path / "octoprint"
         self.basedir.mkdir()
         self.control = tmp_path / "printer"
@@ -118,6 +120,8 @@ class Rig:
         plugins_dir = self.basedir / "plugins"
         plugins_dir.mkdir(exist_ok=True)
         shutil.copy(SUPPORT, plugins_dir / "fake_printer.py")
+        if self.power_plugin:
+            shutil.copy(FAKE_POWER, plugins_dir / "fake_power.py")
         self.runs += 1
         env = dict(os.environ, PYTHONUNBUFFERED="1", FAKE_PRINTER_DIR=str(self.control))
         self.stdout = open(self.basedir / f"stdout-{self.runs}.log", "w")
@@ -270,6 +274,15 @@ class Rig:
         except FileNotFoundError:
             return ""
 
+    def reconnect_times(self):
+        """Seconds since the epoch of each "Reconnecting to the printer" log line."""
+        out = []
+        for line in self.log_text().splitlines():
+            if "Reconnecting to the printer" in line:
+                stamp = time.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+                out.append(time.mktime(stamp) + int(line[20:23]) / 1000)
+        return out
+
     def diagnostics(self):
         lines = [x for x in self.log_text().splitlines() if "power_panic" in x or "Error" in x]
         return (
@@ -283,9 +296,9 @@ class Rig:
 def make_rig(tmp_path, request):
     rigs = []
 
-    def factory(printer=None, **plugin_settings):
+    def factory(printer=None, power_plugin=False, **plugin_settings):
         printer = dict({"firmware": "prusa", "line_time": 0.02}, **(printer or {}))
-        rig = Rig(tmp_path, plugin_settings, printer)
+        rig = Rig(tmp_path, plugin_settings, printer, power_plugin=power_plugin)
         rigs.append(rig)
         rig.start()
         return rig

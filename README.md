@@ -55,6 +55,16 @@ Anything else waits for a person.
 
 A recovery is never offered after the printer reported a fault (thermal runaway,
 *Printer halted*), after a person cancelled the print, or after a print finished.
+A journal whose last line is the end of the file counts as finished even if OctoPrint
+never reported the print done (another plugin can hold up OctoPrint's events).
+
+While a recovery waits for the printer to connect, the plugin asks a power plugin
+whether the printer has power: [PSU Control](https://github.com/jescholl/OctoPrint-PSUControl)
+by default, through its `get_psu_state` helper, which also covers the power plugins that
+plug into PSU Control. While the printer is reported off nothing could answer, so it
+doesn't retry; when power is reported back it tries again soon after. Without a power
+plugin, and after attempts that fail with power on, it backs off on its own (30 s,
+doubling, up to one attempt an hour), because every connect resets a Prusa printer.
 
 ## Generic recovery
 
@@ -82,7 +92,8 @@ Its limits:
 | Longest outage to resume automatically | 10 min | |
 | Keep the printer ready for | 60 min | While waiting for a person, keeps the printer's *Resume* menu available and keeps [PSU Control](https://github.com/jescholl/OctoPrint-PSUControl) from idling it off |
 | Forget interrupted prints after | 24 h | |
-| Retry connecting for | 30 min | OctoPrint itself only tries once at startup |
+| Longest wait between connection retries | 60 min | OctoPrint itself only tries once at startup. The plugin retries from 30 s, doubling the wait each time up to this, until it connects, the recovery is discarded or expires |
+| Read printer power from | any `get_psu_state` helper | `plugin:helper`. While it reports the printer off, no retries; when it reports power back, one soon after |
 | Generic recovery: Z lift, homing command, travel feedrate, extra G-code | 5 mm, `G28 X Y`, 3000 | |
 
 The plugin also fires events (`plugin_power_panic_recovery_pending`, `_resumed`,
