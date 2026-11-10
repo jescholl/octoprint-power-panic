@@ -404,6 +404,19 @@ class PowerPanicPlugin(
             return flask.make_response(flask.jsonify(status), 409)
         return flask.jsonify(status)
 
+    # -- helpers for other plugins -------------------------------------------
+
+    def print_recovery_pending(self):
+        """True while an interrupted print may still be resumed (any state but idle).
+
+        For plugins about to do something that would disturb it, e.g. restart OctoPrint:
+        the reconnect after a restart resets the printer, which a pending Prusa recovery
+        doesn't survive cleanly. A print that is simply running is not "pending"; ask
+        OctoPrint's printer state for that.
+        """
+        with self._lock:
+            return self._controller.state != "idle"
+
     # -- software update ---------------------------------------------------
 
     def get_update_information(self):
@@ -434,3 +447,4 @@ __plugin_hooks__ = {
     "octoprint.events.register_custom_events": register_custom_events,
     "octoprint.plugin.softwareupdate.check_config": _impl.get_update_information,
 }
+__plugin_helpers__ = {"print_recovery_pending": _impl.print_recovery_pending}
