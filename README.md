@@ -126,6 +126,10 @@ the firmware, which is why it is not a substitute for testing on a real printer.
     task lint        # needs pre-commit, installed separately (e.g. pipx install pre-commit):
                      # its dependencies conflict with OctoPrint's in one virtualenv
 
+To exercise startup recovery on a real install without cutting power,
+`tests/support/plant_journal.py` writes a journal that looks like OctoPrint died
+mid-print; restart OctoPrint afterwards. Its docstring has the usage and cautions.
+
 ## License
 
 MIT.
