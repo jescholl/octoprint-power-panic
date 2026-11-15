@@ -6,7 +6,7 @@
   "pre-commit": { "enabled": true },
   "packageRules": [
     {
-      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
       "automerge": true
     }
   ]
